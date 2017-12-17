@@ -1,0 +1,577 @@
+---
+title: "ShahidKhan_Aug17_SL_Asmt"
+author: "Shahid Khan"
+date: "4 November 2017"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+## Load all libraries
+```{r}
+library(rvest)
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(httr)
+library(data.table)
+library(woe)
+library(sqldf)
+
+```
+## R Markdown
+```{r}
+## Let us first import our dataset for modeling
+setwd("C:/bigdata")
+
+PL_XSELL <- read.table("PL_XSELL_201708.csv",sep = ",", header = T)
+
+summary(PL_XSELL)
+table(PL_XSELL$TARGET)
+str(PL_XSELL)
+#Convert some of the variables into their appropriate type
+#Convert ACC_OP_DATE into date type
+fmts <- c("%m-%d-%Y", "%m/%d/%Y")
+PL_XSELL$ACC_OP_DATE <- as.Date(as.numeric(apply(outer(PL_XSELL$ACC_OP_DATE, fmts, as.Date), 1, na.omit)), "1970-01-01")
+PL_XSELL$CUST_ID <- as.character(PL_XSELL$CUST_ID)
+PL_XSELL$OCCUPATION <- as.character(PL_XSELL$OCCUPATION)
+PL_XSELL$AGE_BKT <- as.character(PL_XSELL$AGE_BKT)
+
+
+
+```
+
+## Identify the quartiling and Draw box plots for some of the variables
+```{r}
+quantile(PL_XSELL$BALANCE, 
+         c(0.01, 0.05, 0.1, 0.25, 0.50, 0.75, 0.90, 0.95, 0.99, 1))
+
+quantile(PL_XSELL$HOLDING_PERIOD, 
+         c(0.01, 0.05, 0.1, 0.25, 0.50, 0.75, 0.90, 0.95, 0.99, 1))
+
+quantile(PL_XSELL$SCR, 
+         c(0.01, 0.05, 0.1, 0.25, 0.50, 0.75, 0.90, 0.95, 0.99, 1))
+
+quantile(PL_XSELL$FLG_HAS_CC, 
+         c(0.01, 0.05, 0.1, 0.25, 0.50, 0.75, 0.90, 0.95, 0.99, 1))
+
+#special technique of quartiling by date
+dq <- quantile(ifelse(class(PL_XSELL$ACC_OP_DATE) != "Date", PL_XSELL$ACC_OP_DATE, as.integer(PL_XSELL$ACC_OP_DATE)), 
+         c(0.01, 0.05, 0.1, 0.25, 0.50, 0.75, 0.90, 0.95, 0.99, 1))
+class(dq) <- "Date"
+
+#Boxplot for balance
+
+boxplot(PL_XSELL$BALANCE , 
+        main= "Balance box plot" ,
+        xlab = "Overall Base"
+)
+# Do outlier treatment for balance
+
+PL_XSELL$BAL_CAP <- 
+  ifelse(PL_XSELL$BALANCE > 1500000, 1500000, PL_XSELL$BALANCE)
+
+#Box plot for BAL_CAP
+boxplot(PL_XSELL$BALANCE , 
+        main= "BAL_CAP box plot" ,
+        xlab = "Overall Base"
+)
+
+
+boxplot(PL_XSELL$HOLDING_PERIOD , 
+        main= "Holding Period box plot" ,
+        xlab = "Overall Base"
+)
+
+boxplot(PL_XSELL$AGE , 
+        main= "Age Box Plot" ,
+        xlab = "Overall Base"
+)
+
+boxplot(PL_XSELL$SCR , 
+        main= "Score Box Plot" ,
+        xlab = "Overall Base"
+)
+
+boxplot(PL_XSELL$FLG_HAS_CC , 
+        main= "Flag has charges Box Plot" ,
+        xlab = "Overall Base"
+)
+
+
+```
+
+#Identify significant variables using IV
+```{r}
+
+#Converting the ACC_OP_DATE as a character variable for IV
+PL_XSELL$ACC_OP_DATE <- as.character(PL_XSELL$ACC_OP_DATE)
+
+iv.plot.summary(iv.mult(PL_XSELL[,!names(PL_XSELL) %in% c("CUST_ID")],
+                        "TARGET",TRUE, verbose = TRUE))
+
+iv <- iv.mult(PL_XSELL[,!names(PL_XSELL) %in% c("CUST_ID")],
+              "TARGET",FALSE)
+
+iv
+str(PL_XSELL)
+# Following is what iv produces
+#SUSPICIOUS - ACC_OP_DATE
+#AVERAGE - HOLDING_PERIOD, NO_OF_L_DR_TXNS,TOT_NO_OF_L_TXNS NO_OF_ATM_DR_TXNS, NO_OF_L_CR_TXNS,NO_OF_CHQ_DR_TXNS, AMT_CHQ_DR, AMT_L_DR
+#WEAK - OCCUPATION, BALANCE, BAL_CAP, AVG_AMT_PER_CHQ_TXN, FLG_HAS_CC, AMT_ATM_DR, NO_OF_NET_DR_TXNS, SCR, NO_OF_BR_CSH_WDL_DR_TXNS, AVG_AMT_PER_NET_TXN, AMT_NET_DR, AGE, AGE_BKT, AMT_BR_CSH_WDL_DR, ACC_TYPE, AVG_AMT_PER_CSH_WDL_TXN, GENDER
+#VERY WEAK - FLG_HAS_ANY_CHGS
+
+```
+
+## Hypothesis statement
+```
+1. We dont have any strong variables as provided by iv
+2. Among the average variables, we think the following
+  a. Number of debit,credit transactions seems to have a relationship with people taking personal loan
+  b. Balance or imputed balance cap are related to PL.
+  c. People having credit card seem to be taking PL.
+  d. Occupation also seems to be related to PL.
+  e. People within a certain age bracket seems to be going for personal Loan
+  
+```
+
+#Put together the visualization graphs
+```{r}
+colList = c("HOLDING_PERIOD", "NO_OF_L_DR_TXNS","TOT_NO_OF_L_TXNS", "NO_OF_ATM_DR_TXNS", "NO_OF_L_CR_TXNS","NO_OF_CHQ_DR_TXNS", "AMT_CHQ_DR", "AMT_L_DR","BALANCE", "BAL_CAP", "AVG_AMT_PER_CHQ_TXN", "FLG_HAS_CC", "AMT_ATM_DR", "NO_OF_NET_DR_TXNS", "SCR", "NO_OF_BR_CSH_WDL_DR_TXNS", "AVG_AMT_PER_NET_TXN", "AMT_NET_DR", "AGE","AMT_BR_CSH_WDL_DR", "AVG_AMT_PER_CSH_WDL_TXN")
+source("C:/bigdata/Visualization-m.R")
+source("C:/bigdata/Visualization.R")
+output_folder = "C:/bigdata/VisualizationsAssignment-4/"
+targetVarName = "TARGET"
+
+#Converting the ACC_OP_DATE back to date
+PL_XSELL$ACC_OP_DATE <- as.Date(PL_XSELL$ACC_OP_DATE)
+for (i in 1 : length(colList)) {
+  fn_biz_viz(df = PL_XSELL, target = targetVarName, var = colList[i])
+}
+fn_biz_viz_date(df = PL_XSELL, target = targetVarName,"ACC_OP_DATE")
+
+```
+## Sample the data into dev, val and hold
+```{r}
+#Sample the data into dev, val and hold on the basis of random 
+myPlXsellData <- PL_XSELL
+myPlXsellData.dev <- myPlXsellData[which(myPlXsellData$random <= 0.5),]
+myPlXsellData.val <- myPlXsellData[which(myPlXsellData$random > 0.5 
+                           & myPlXsellData$random <= 0.8 ),]
+myPlXsellData.hold <- myPlXsellData[which(myPlXsellData$random > 0.8),]
+nrow(myPlXsellData)
+nrow(myPlXsellData.dev)
+nrow(myPlXsellData.val)
+nrow(myPlXsellData.hold)
+
+sum(myPlXsellData$TARGET) / nrow(myPlXsellData)
+sum(myPlXsellData.dev$TARGET)/ nrow(myPlXsellData.dev)
+sum(myPlXsellData.val$TARGET)/ nrow(myPlXsellData.val)
+sum(myPlXsellData.hold$TARGET)/ nrow(myPlXsellData.hold)
+```
+## Try running the model using all variables as identified by IV
+```{r}
+
+mylogit <- glm(
+  TARGET ~ ACC_OP_DATE + HOLDING_PERIOD + NO_OF_L_DR_TXNS + TOT_NO_OF_L_TXNS + NO_OF_ATM_DR_TXNS + NO_OF_L_CR_TXNS + NO_OF_CHQ_DR_TXNS + AMT_CHQ_DR + 
+AMT_L_DR + OCCUPATION + BALANCE  + AVG_AMT_PER_CHQ_TXN + 
+FLG_HAS_CC + AMT_ATM_DR + NO_OF_NET_DR_TXNS + SCR + 
+NO_OF_BR_CSH_WDL_DR_TXNS + AVG_AMT_PER_NET_TXN + AMT_NET_DR + AGE + AGE_BKT + AMT_BR_CSH_WDL_DR + ACC_TYPE + AVG_AMT_PER_CSH_WDL_TXN + GENDER +
+FLG_HAS_ANY_CHGS ,  data = myPlXsellData.dev, family = "binomial"
+)
+summary(mylogit)
+
+#After removing all insignificant variables, we are left with
+#1 Holding Period
+#2 TOT_NO_OF_L_TXNS
+#3 AGE
+#4 SCR
+#5 OCCUPATION
+#6 FLAG_HAS_CC
+#7 GENDER
+
+#Adding occupation imputed after taking into consideration
+# that PROF, SENP and SAL
+myPlXsellData.dev$OCCUPATION_Imputed =
+  ifelse ( myPlXsellData.dev$OCCUPATION %in% c("SAL", "PROF","SENP"), "SAL-SENP-PROF",myPlXsellData.dev$OCCUPATION)
+
+#Transform age
+myPlXsellData.dev$AGE_BKT_IMPUTED <- ifelse(myPlXsellData.dev$AGE_BKT %in% c("<25",">50"),"<25OR>50",                                   ifelse(myPlXsellData.dev$AGE_BKT %in% c("26-30","31-35"),"26-35",ifelse(myPlXsellData.dev$AGE_BKT %in% c("36-40","46-50"),"36-40OR46-50",myPlXsellData.dev$AGE_BKT)))
+
+#Combine age even further after model output
+myPlXsellData.dev$AGE_BKT_IMPUTED <- ifelse(myPlXsellData.dev$AGE_BKT_IMPUTED %in% c("26-35","36-40OR46-50"),"26-40Or46-50",myPlXsellData.dev$AGE_BKT_IMPUTED)
+
+#Combine age even further
+myPlXsellData.dev$AGE_BKT_IMPUTED <- ifelse(myPlXsellData.dev$AGE_BKT_IMPUTED %in% c("26-40Or46-50","<25OR>50"),"Non41-45",myPlXsellData.dev$AGE_BKT_IMPUTED)
+
+age_bkt_imputed <- as.data.frame.matrix(table(myPlXsellData.dev$AGE_BKT_IMPUTED, myPlXsellData.dev$TARGET))
+age_bkt_imputed$total <- (age_bkt_imputed$`0` + age_bkt_imputed$`1`)
+age_bkt_imputed$rrate <- round(age_bkt_imputed$`1` * 100 / (age_bkt_imputed$`0` + age_bkt_imputed$`1`), 3)
+age_bkt_imputed
+
+#Initial Holding Period % split
+hp <- as.data.frame.matrix(table(myPlXsellData.dev$HOLDING_PERIOD, myPlXsellData.dev$TARGET))
+hp$total <- (hp$`0` + hp$`1`)
+hp$rrate <- round(hp$`1` * 100 / (hp$`0` + hp$`1`), 3)
+hp
+
+#Impute holding period
+myPlXsellData.dev$HP_IMPUTED <- ifelse(myPlXsellData.dev$HOLDING_PERIOD %in% c(17,20,22,23,25,26,28,30), "6-9",ifelse(myPlXsellData.dev$HOLDING_PERIOD %in% c(24,27,29,31),"3-4",ifelse(myPlXsellData.dev$HOLDING_PERIOD %in% c(16,19),"10-11",ifelse(myPlXsellData.dev$HOLDING_PERIOD %in% c(5,7,9,11,14,18,21),"12-13",ifelse(myPlXsellData.dev$HOLDING_PERIOD %in% c(4,6,8,12,13,15),"14-15",ifelse(myPlXsellData.dev$HOLDING_PERIOD %in% c(3),"16",ifelse(myPlXsellData.dev$HOLDING_PERIOD %in% c(10),"18",ifelse(myPlXsellData.dev$HOLDING_PERIOD %in% c(2),"21",ifelse(myPlXsellData.dev$HOLDING_PERIOD %in% c(1),"25","NA")))))))))
+
+
+#Check for correctness whether any unwanted NA is inadvertently introduced
+unique(myPlXsellData.dev$HP_IMPUTED)
+#Impute holding period further after 1 model run
+myPlXsellData.dev$HP_IMPUTED <- ifelse(myPlXsellData.dev$HP_IMPUTED %in% c("12-13","14-15"),"12-15",myPlXsellData.dev$HP_IMPUTED)
+myPlXsellData.dev$HP_IMPUTED <- ifelse(myPlXsellData.dev$HP_IMPUTED %in% c("16","18"),"16OR18",myPlXsellData.dev$HP_IMPUTED)
+#Impute holding period further after 2 model run
+myPlXsellData.dev$HP_IMPUTED <- ifelse(myPlXsellData.dev$HP_IMPUTED %in% c("12-15","16OR18"),"12-18",myPlXsellData.dev$HP_IMPUTED)
+#Impute holding period further after 3 model run
+myPlXsellData.dev$HP_IMPUTED <- ifelse(myPlXsellData.dev$HP_IMPUTED %in% c("12-18","10-11"),"10-18",myPlXsellData.dev$HP_IMPUTED)
+myPlXsellData.dev$HP_IMPUTED <- ifelse(myPlXsellData.dev$HP_IMPUTED %in% c("3-4","6-9"),"3-9",myPlXsellData.dev$HP_IMPUTED)
+#Imput further after 4 model run
+myPlXsellData.dev$HP_IMPUTED <- ifelse(myPlXsellData.dev$HP_IMPUTED %in% c("21","25"),"21-25",myPlXsellData.dev$HP_IMPUTED)
+
+
+# After all the imputations, below is the split category
+hp_i <- as.data.frame.matrix(table(myPlXsellData.dev$HP_IMPUTED, myPlXsellData.dev$TARGET))
+hp_i$total <- (hp_i$`0` + hp_i$`1`)
+hp_i$rrate <- round(hp_i$`1` * 100 / (hp_i$`0` + hp_i$`1`), 3)
+hp_i
+
+unique(myPlXsellData.dev$HP_IMPUTED)
+
+# run model after all imputations and corrections
+mylogit <- glm(
+  TARGET ~  
+    HP_IMPUTED +
+    TOT_NO_OF_L_TXNS + 
+    AGE_BKT_IMPUTED +
+    OCCUPATION_Imputed + BALANCE + FLG_HAS_CC + SCR
+    ,  data = myPlXsellData.dev, family = "binomial"
+)
+summary(mylogit)
+
+
+```
+## Do model validation for Ks, goodnessof fit and concordance
+```{r}
+#Use predict to get the probability for the ones present in model
+#for their hit/miss
+View(myPlXsellData.dev)
+myPlXsellData.dev$prob <- predict(mylogit, myPlXsellData.dev, type="response")
+myPlXsellData.dev$deciles <- decile(myPlXsellData.dev$prob)
+#class(myPlXsellData.dev)
+
+#calculate rank ordering
+tmp_PlXsellDT = data.table(myPlXsellData.dev)
+rankPlXsell <- tmp_PlXsellDT[, list(    
+  cnt = length(TARGET), 
+  cnt_resp = sum(TARGET), 
+  cnt_non_resp = sum(TARGET == 0)) , 
+  by=deciles][order(-deciles)]
+rankPlXsell$rrate <- round (rankPlXsell$cnt_resp / rankPlXsell$cnt,3);
+rankPlXsell$cum_resp <- cumsum(rankPlXsell$cnt_resp)
+rankPlXsell$cum_non_resp <- cumsum(rankPlXsell$cnt_non_resp)
+rankPlXsell$cum_rel_resp <- round(rankPlXsell$cum_resp / sum(rankPlXsell$cnt_resp),3);
+rankPlXsell$cum_rel_non_resp <- round(rankPlXsell$cum_non_resp / sum(rankPlXsell$cnt_non_resp),3);
+rankPlXsell$ks <- percent(abs(rankPlXsell$cum_rel_resp - rankPlXsell$cum_rel_non_resp));
+rankPlXsell$rrate <- percent(rankPlXsell$rrate)
+rankPlXsell$cum_rel_resp <- percent(rankPlXsell$cum_rel_resp)
+rankPlXsell$cum_rel_non_resp <- percent(rankPlXsell$cum_rel_non_resp)
+
+View(rankPlXsell)
+
+############ Goodness of Fit: ##############
+# A function to do the Hosmer-Lemeshow test in R.
+# R Function is due to Peter D. M. Macdonald, McMaster University.
+head(myPlXsellData.dev)
+ttt <- data.table(myPlXsellData.dev)
+sqldf('select deciles, count(1) as cnt_cust,
+      sum(TARGET) as cnt_resp,
+      sum(prob) as est_rep
+from ttt
+group by deciles'
+)
+
+
+hosmerlem <-
+  function (y, yhat, g = 10) 
+  {
+    cutyhat <- cut(yhat, breaks = quantile(yhat, probs = seq(0, 
+                                                             1, 1/g)), include.lowest = T)
+    obs <- xtabs(cbind(1 - y, y) ~ cutyhat)
+    expect <- xtabs(cbind(1 - yhat, yhat) ~ cutyhat)
+    chisq <- sum((obs - expect)^2/expect)
+    P <- 1 - pchisq(chisq, g - 2)
+    c("X^2" = chisq, Df = g - 2, "P(>Chi)" = P)
+  }
+
+hl_gofPlXsell = hosmerlem(myPlXsellData.dev$TARGET, myPlXsellData.dev$prob)
+hl_gofPlXsell
+
+#***FUNCTION TO CALCULATE CONCORDANCE AND DISCORDANCE***#
+concordance=function(y, yhat)
+{
+  Con_Dis_Data = cbind(y, yhat) 
+  ones = Con_Dis_Data[Con_Dis_Data[,1] == 1,]
+  zeros = Con_Dis_Data[Con_Dis_Data[,1] == 0,]
+  conc=matrix(0, dim(zeros)[1], dim(ones)[1])
+  disc=matrix(0, dim(zeros)[1], dim(ones)[1])
+  ties=matrix(0, dim(zeros)[1], dim(ones)[1])
+  for (j in 1:dim(zeros)[1])
+  {
+    for (i in 1:dim(ones)[1])
+    {
+      if (ones[i,2]>zeros[j,2])
+      {conc[j,i]=1}
+      else if (ones[i,2]<zeros[j,2])
+      {disc[j,i]=1}
+      else if (ones[i,2]==zeros[j,2])
+      {ties[j,i]=1}
+    }
+  }
+  Pairs=dim(zeros)[1]*dim(ones)[1]
+  PercentConcordance=(sum(conc)/Pairs)*100
+  PercentDiscordance=(sum(disc)/Pairs)*100
+  PercentTied=(sum(ties)/Pairs)*100
+  return(list("Percent Concordance"=PercentConcordance,"Percent Discordance"=PercentDiscordance,"Percent Tied"=PercentTied,"Pairs"=Pairs))
+}
+
+concordance_output = concordance(myPlXsellData.dev$TARGET, myPlXsellData.dev$prob)
+concordance_output
+
+# Goodness of fit has problems, hence need to re-look at other significant variables 
+
+# Balance has got some cracks, fixing those by considering Balance bucket followed by BAL_WOE
+myPlXsellData.dev$BAL_BKT <- ifelse(myPlXsellData.dev$BALANCE <= 9200, "<=9200",
+                      ifelse(myPlXsellData.dev$BALANCE <= 66000, "9.2k - 66k",
+                      ifelse(myPlXsellData.dev$BALANCE <= 116000,"66k - 116k",
+                      ifelse(myPlXsellData.dev$BALANCE <= 190000,"116k - 190k",
+                      ifelse(myPlXsellData.dev$BALANCE <= 660000,"190k - 660k",
+                      ifelse(myPlXsellData.dev$BALANCE <= 2300000,"660k-2300k",">2300k"))))))
+
+# Take the table output and then convert the same into a WOE
+table(myPlXsellData.dev$BAL_BKT,myPlXsellData.dev$TARGET)                      
+
+#Take the WOE output from excel as below
+myPlXsellData.dev$BAL_WOE <- ifelse(myPlXsellData.dev$BALANCE <= 9200, -53.64,
+                      ifelse(myPlXsellData.dev$BALANCE <= 66000, -26.74,
+                      ifelse(myPlXsellData.dev$BALANCE <= 116000,-8.76,
+                      ifelse(myPlXsellData.dev$BALANCE <= 190000,11.3,
+                      ifelse(myPlXsellData.dev$BALANCE <= 660000,3.83,
+                      ifelse(myPlXsellData.dev$BALANCE <= 2300000,34.37,49.13))))))
+
+#re-run model after changing from BALANCE to BAL_WOE
+mylogit <- glm(
+  TARGET ~  
+    HP_IMPUTED +
+    TOT_NO_OF_L_TXNS + 
+    AGE_BKT_IMPUTED +
+    OCCUPATION_Imputed + BAL_WOE + FLG_HAS_CC + SCR
+    ,  data = myPlXsellData.dev, family = "binomial"
+)
+summary(mylogit)
+
+#re-run goodness of fit again
+#Finally got a goodness of fit which is
+#     X^2          Df      P(>Chi) 
+# 18.76871653  8.00000000  0.01614671 
+
+```
+
+## Run the model against the validation sample and compare model performance
+```{r}
+myPlXsellData.val$OCCUPATION_Imputed =
+  ifelse ( myPlXsellData.val$OCCUPATION %in% c("SAL", "PROF","SENP"), "SAL-SENP-PROF",myPlXsellData.val$OCCUPATION)
+
+#Transform age
+myPlXsellData.val$AGE_BKT_IMPUTED <- ifelse(myPlXsellData.val$AGE_BKT %in% c("<25",">50"),"<25OR>50",                                   ifelse(myPlXsellData.val$AGE_BKT %in% c("26-30","31-35"),"26-35",ifelse(myPlXsellData.val$AGE_BKT %in% c("36-40","46-50"),"36-40OR46-50",myPlXsellData.val$AGE_BKT)))
+
+#Combine age even further after model output
+myPlXsellData.val$AGE_BKT_IMPUTED <- ifelse(myPlXsellData.val$AGE_BKT_IMPUTED %in% c("26-35","36-40OR46-50"),"26-40Or46-50",myPlXsellData.val$AGE_BKT_IMPUTED)
+
+#Combine age even further
+myPlXsellData.val$AGE_BKT_IMPUTED <- ifelse(myPlXsellData.val$AGE_BKT_IMPUTED %in% c("26-40Or46-50","<25OR>50"),"Non41-45",myPlXsellData.val$AGE_BKT_IMPUTED)
+
+#Impute holding period
+myPlXsellData.val$HP_IMPUTED <- ifelse(myPlXsellData.val$HOLDING_PERIOD %in% c(17,20,22,23,25,26,28,30), "6-9",ifelse(myPlXsellData.val$HOLDING_PERIOD %in% c(24,27,29,31),"3-4",ifelse(myPlXsellData.val$HOLDING_PERIOD %in% c(16,19),"10-11",ifelse(myPlXsellData.val$HOLDING_PERIOD %in% c(5,7,9,11,14,18,21),"12-13",ifelse(myPlXsellData.val$HOLDING_PERIOD %in% c(4,6,8,12,13,15),"14-15",ifelse(myPlXsellData.val$HOLDING_PERIOD %in% c(3),"16",ifelse(myPlXsellData.val$HOLDING_PERIOD %in% c(10),"18",ifelse(myPlXsellData.val$HOLDING_PERIOD %in% c(2),"21",ifelse(myPlXsellData.val$HOLDING_PERIOD %in% c(1),"25","NA")))))))))
+
+
+#Impute holding period further after 1 model run
+myPlXsellData.val$HP_IMPUTED <- ifelse(myPlXsellData.val$HP_IMPUTED %in% c("12-13","14-15"),"12-15",myPlXsellData.val$HP_IMPUTED)
+myPlXsellData.val$HP_IMPUTED <- ifelse(myPlXsellData.val$HP_IMPUTED %in% c("16","18"),"16OR18",myPlXsellData.val$HP_IMPUTED)
+#Impute holding period further after 2 model run
+myPlXsellData.val$HP_IMPUTED <- ifelse(myPlXsellData.val$HP_IMPUTED %in% c("12-15","16OR18"),"12-18",myPlXsellData.val$HP_IMPUTED)
+#Impute holding period further after 3 model run
+myPlXsellData.val$HP_IMPUTED <- ifelse(myPlXsellData.val$HP_IMPUTED %in% c("12-18","10-11"),"10-18",myPlXsellData.val$HP_IMPUTED)
+myPlXsellData.val$HP_IMPUTED <- ifelse(myPlXsellData.val$HP_IMPUTED %in% c("3-4","6-9"),"3-9",myPlXsellData.val$HP_IMPUTED)
+#Imput further after 4 model run
+myPlXsellData.val$HP_IMPUTED <- ifelse(myPlXsellData.val$HP_IMPUTED %in% c("21","25"),"21-25",myPlXsellData.val$HP_IMPUTED)
+
+
+#Balance transformation
+myPlXsellData.val$BAL_BKT <- ifelse(myPlXsellData.val$BALANCE <= 9200, "<=9200",
+                      ifelse(myPlXsellData.val$BALANCE <= 66000, "9.2k - 66k",
+                      ifelse(myPlXsellData.val$BALANCE <= 116000,"66k - 116k",
+                      ifelse(myPlXsellData.val$BALANCE <= 190000,"116k - 190k",
+                      ifelse(myPlXsellData.val$BALANCE <= 660000,"190k - 660k",
+                      ifelse(myPlXsellData.val$BALANCE <= 2300000,"660k-2300k",">2300k"))))))
+
+#Take the WOE output from excel as below
+myPlXsellData.val$BAL_WOE <- ifelse(myPlXsellData.val$BALANCE <= 9200, -53.64,
+                      ifelse(myPlXsellData.val$BALANCE <= 66000, -26.74,
+                      ifelse(myPlXsellData.val$BALANCE <= 116000,-8.76,
+                      ifelse(myPlXsellData.val$BALANCE <= 190000,11.3,
+                      ifelse(myPlXsellData.val$BALANCE <= 660000,3.83,
+                      ifelse(myPlXsellData.val$BALANCE <= 2300000,34.37,49.13))))))
+
+
+# run model after all imputations and corrections
+mylogit.val <- glm(
+  TARGET ~  
+    HP_IMPUTED +
+    TOT_NO_OF_L_TXNS + 
+    AGE_BKT_IMPUTED +
+    OCCUPATION_Imputed + BAL_WOE + FLG_HAS_CC + SCR
+    ,  data = myPlXsellData.val, family = "binomial"
+)
+summary(mylogit.val)
+
+
+```
+## Compare dev and validations
+```{r}
+# The dev and validation sample shows a ration < 0.5 for transformed significant variable HP_IMPUTED3-9
+# This then has to be transformed further to bring stability back
+# Combine 3-9 holding period with its nearest ration which is 10-18
+myPlXsellData.dev$HP_IMPUTED <- ifelse(myPlXsellData.dev$HP_IMPUTED %in% c("3-9","10-18"),"3-18",myPlXsellData.dev$HP_IMPUTED)
+
+#Run both data and validation models and compare
+mylogit <- glm(
+  TARGET ~  
+    HP_IMPUTED +
+    TOT_NO_OF_L_TXNS + 
+    AGE_BKT_IMPUTED +
+    OCCUPATION_Imputed + BAL_WOE + FLG_HAS_CC + SCR
+    ,  data = myPlXsellData.dev, family = "binomial"
+)
+summary(mylogit)
+
+myPlXsellData.val$HP_IMPUTED <- ifelse(myPlXsellData.val$HP_IMPUTED %in% c("3-9","10-18"),"3-18",myPlXsellData.val$HP_IMPUTED)
+
+
+mylogit.val <- glm(
+  TARGET ~  
+    HP_IMPUTED +
+    TOT_NO_OF_L_TXNS + 
+    AGE_BKT_IMPUTED +
+    OCCUPATION_Imputed + BAL_WOE + FLG_HAS_CC + SCR
+    ,  data = myPlXsellData.val, family = "binomial"
+)
+summary(mylogit.val)
+
+```
+
+## Final ratio comparison result
+```
+Val						Ratio = Val/Dev		Dev					
+	Estimate	Std. Error	z value	Pr(>|z|)					Estimate	Std. Error	z value	Pr(>|z|)	
+(Intercept)	-2.1546215	0.1767695	-12.189	< 2e-16	***	1.095977215		(Intercept)	-1.9659364	0.1315412	-14.945	< 2e-16	***
+HP_IMPUTED3-18	-0.7865961	0.1238845	-6.349	2.16E-10	***	0.887250599		HP_IMPUTED3-18	-0.8865546	0.0924354	-9.591	< 2e-16	***
+TOT_NO_OF_L_TXNS	0.0168207	0.0018841	8.927	< 2e-16	***	0.976097629		TOT_NO_OF_L_TXNS	0.0172326	0.001425	12.093	< 2e-16	***
+AGE_BKT_IMPUTEDNon41-45	-0.4422792	0.1047056	-4.224	2.40E-05	***	1.361172356		AGE_BKT_IMPUTEDNon41-45	-0.3249252	0.0794923	-4.088	4.36E-05	***
+OCCUPATION_ImputedSELF-EMP	0.8024122	0.0931204	8.617	< 2e-16	***	1.199354176		OCCUPATION_ImputedSELF-EMP	0.6690369	0.0720918	9.28	< 2e-16	***
+BAL_WOE	-0.0079606	0.0015997	-4.976	6.48E-07	***	1.071485295		BAL_WOE	-0.0074295	0.0012243	-6.069	1.29E-09	***
+FLG_HAS_CC	0.6489127	0.0840603	7.72	1.17E-14	***	1.058828357		FLG_HAS_CC	0.6128592	0.0637013	9.621	< 2e-16	***
+SCR	0.0009863	0.0001595	6.185	6.20E-10	***	1.18204698		SCR	0.0008344	0.0001212	6.886	5.74E-12	***
+
+```
+## Running this finally on hold data
+```{r}
+myPlXsellData.hold$OCCUPATION_Imputed =
+  ifelse ( myPlXsellData.hold$OCCUPATION %in% c("SAL", "PROF","SENP"), "SAL-SENP-PROF",myPlXsellData.hold$OCCUPATION)
+
+#Transform age
+myPlXsellData.hold$AGE_BKT_IMPUTED <- ifelse(myPlXsellData.hold$AGE_BKT %in% c("<25",">50"),"<25OR>50",                                   ifelse(myPlXsellData.hold$AGE_BKT %in% c("26-30","31-35"),"26-35",ifelse(myPlXsellData.hold$AGE_BKT %in% c("36-40","46-50"),"36-40OR46-50",myPlXsellData.hold$AGE_BKT)))
+
+#Combine age even further after model output
+myPlXsellData.hold$AGE_BKT_IMPUTED <- ifelse(myPlXsellData.hold$AGE_BKT_IMPUTED %in% c("26-35","36-40OR46-50"),"26-40Or46-50",myPlXsellData.hold$AGE_BKT_IMPUTED)
+
+#Combine age even further
+myPlXsellData.hold$AGE_BKT_IMPUTED <- ifelse(myPlXsellData.hold$AGE_BKT_IMPUTED %in% c("26-40Or46-50","<25OR>50"),"Non41-45",myPlXsellData.hold$AGE_BKT_IMPUTED)
+
+#Impute holding period
+myPlXsellData.hold$HP_IMPUTED <- ifelse(myPlXsellData.hold$HOLDING_PERIOD %in% c(17,20,22,23,25,26,28,30), "6-9",ifelse(myPlXsellData.hold$HOLDING_PERIOD %in% c(24,27,29,31),"3-4",ifelse(myPlXsellData.hold$HOLDING_PERIOD %in% c(16,19),"10-11",ifelse(myPlXsellData.hold$HOLDING_PERIOD %in% c(5,7,9,11,14,18,21),"12-13",ifelse(myPlXsellData.hold$HOLDING_PERIOD %in% c(4,6,8,12,13,15),"14-15",ifelse(myPlXsellData.hold$HOLDING_PERIOD %in% c(3),"16",ifelse(myPlXsellData.hold$HOLDING_PERIOD %in% c(10),"18",ifelse(myPlXsellData.hold$HOLDING_PERIOD %in% c(2),"21",ifelse(myPlXsellData.hold$HOLDING_PERIOD %in% c(1),"25","NA")))))))))
+
+
+#Impute holding period further after 1 model run
+myPlXsellData.hold$HP_IMPUTED <- ifelse(myPlXsellData.hold$HP_IMPUTED %in% c("12-13","14-15"),"12-15",myPlXsellData.hold$HP_IMPUTED)
+myPlXsellData.hold$HP_IMPUTED <- ifelse(myPlXsellData.hold$HP_IMPUTED %in% c("16","18"),"16OR18",myPlXsellData.hold$HP_IMPUTED)
+#Impute holding period further after 2 model run
+myPlXsellData.hold$HP_IMPUTED <- ifelse(myPlXsellData.hold$HP_IMPUTED %in% c("12-15","16OR18"),"12-18",myPlXsellData.hold$HP_IMPUTED)
+#Impute holding period further after 3 model run
+myPlXsellData.hold$HP_IMPUTED <- ifelse(myPlXsellData.hold$HP_IMPUTED %in% c("12-18","10-11"),"10-18",myPlXsellData.hold$HP_IMPUTED)
+myPlXsellData.hold$HP_IMPUTED <- ifelse(myPlXsellData.hold$HP_IMPUTED %in% c("3-4","6-9"),"3-9",myPlXsellData.hold$HP_IMPUTED)
+#Imput further after 4 model run
+myPlXsellData.hold$HP_IMPUTED <- ifelse(myPlXsellData.hold$HP_IMPUTED %in% c("21","25"),"21-25",myPlXsellData.hold$HP_IMPUTED)
+myPlXsellData.hold$HP_IMPUTED <- ifelse(myPlXsellData.hold$HP_IMPUTED %in% c("3-9","10-18"),"3-18",myPlXsellData.hold$HP_IMPUTED)
+
+
+
+#Balance transformation
+myPlXsellData.hold$BAL_BKT <- ifelse(myPlXsellData.hold$BALANCE <= 9200, "<=9200",
+                      ifelse(myPlXsellData.hold$BALANCE <= 66000, "9.2k - 66k",
+                      ifelse(myPlXsellData.hold$BALANCE <= 116000,"66k - 116k",
+                      ifelse(myPlXsellData.hold$BALANCE <= 190000,"116k - 190k",
+                      ifelse(myPlXsellData.hold$BALANCE <= 660000,"190k - 660k",
+                      ifelse(myPlXsellData.hold$BALANCE <= 2300000,"660k-2300k",">2300k"))))))
+
+#Take the WOE output from excel as below
+myPlXsellData.hold$BAL_WOE <- ifelse(myPlXsellData.hold$BALANCE <= 9200, -53.64,
+                      ifelse(myPlXsellData.hold$BALANCE <= 66000, -26.74,
+                      ifelse(myPlXsellData.hold$BALANCE <= 116000,-8.76,
+                      ifelse(myPlXsellData.hold$BALANCE <= 190000,11.3,
+                      ifelse(myPlXsellData.hold$BALANCE <= 660000,3.83,
+                      ifelse(myPlXsellData.hold$BALANCE <= 2300000,34.37,49.13))))))
+
+
+# run model after all imputations and corrections
+mylogit.hold <- glm(
+  TARGET ~  
+    HP_IMPUTED +
+    TOT_NO_OF_L_TXNS + 
+    AGE_BKT_IMPUTED +
+    OCCUPATION_Imputed + BAL_WOE + FLG_HAS_CC + SCR
+    ,  data = myPlXsellData.hold, family = "binomial"
+)
+summary(mylogit.hold)
+
+# Rank Order
+myPlXsellData.hold$prob <- predict(mylogit, myPlXsellData.hold, type="response")
+myPlXsellData.hold$deciles <- decile(myPlXsellData.hold$prob)
+
+tmp_PlXsellDT = data.table(myPlXsellData.hold)
+rank <- tmp_PlXsellDT[, list(    
+  cnt = length(TARGET), 
+  cnt_resp = sum(TARGET), 
+  cnt_non_resp = sum(TARGET == 0)) , 
+  by=deciles][order(-deciles)]
+rank$rrate <- round (rank$cnt_resp / rank$cnt,3);
+rank$cum_resp <- cumsum(rank$cnt_resp)
+rank$cum_non_resp <- cumsum(rank$cnt_non_resp)
+rank$cum_rel_resp <- round(rank$cum_resp / sum(rank$cnt_resp),3);
+rank$cum_rel_non_resp <- round(rank$cum_non_resp / sum(rank$cnt_non_resp),3);
+rank$ks <- percent(abs(rank$cum_rel_resp - rank$cum_rel_non_resp));
+rank$rrate <- percent(rank$rrate)
+rank$cum_rel_resp <- percent(rank$cum_rel_resp)
+rank$cum_rel_non_resp <- percent(rank$cum_rel_non_resp)
+
+View(rank)
+
+
+
+```
