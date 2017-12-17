@@ -1,0 +1,177 @@
+---
+title: "Onion Assignment - Shahid Khan"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+#Load all packages
+```{r}
+library(rvest)
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(httr)
+library(data.table)
+library(stringr)
+library(prophet)
+
+```
+
+#Aquire the daily onion data from nhrdf.org
+```{r}
+getwd()
+setwd("C:/bigdata")
+page=read_html("DailyWiseMarketArrivals_2016.html")
+table_node=html_node(page,"#dnn_ctr966_DailyWiseMarketArrivals_GridView1")
+table=html_table(table_node)
+str(table)
+df=table
+
+```
+#Start refining the data by putting in column names which are meaningful
+```{r}
+dim(df)
+column_name = c('date','market','quantity','priceMin','priceMax','priceMod')
+colnames(df)=column_name
+df$priceMax=as.numeric(df$priceMax)
+df$priceMin=as.numeric(df$priceMin)
+df$priceMod=as.numeric(df$priceMod)
+df$date = as.Date(df$date,format = "%d/%B/%Y")
+str(df)
+
+```
+#Remove the NA from the dataset and mutate data
+```{r}
+df=filter(df,!is.na(priceMod))
+df=filter(df,!is.na(priceMax))
+df=filter(df,!is.na(priceMin))
+df1 <- df %>% mutate(market1 = market) %>% separate(market1,c("city", "state"),sep="\\(")
+unique(df1$state)
+```
+#Data refining for cities and states
+```{r}
+str(df1)
+#Find out cities which are not a duplicate
+citiesWithNoState = df1 %>% filter(is.na(state))
+citiesWithNoState = citiesWithNoState[!duplicated(citiesWithNoState[,c("city")]),]
+#put all cities with no state with either
+#View(citiesWithNoState$city)
+#find all states
+statesWithNoDupes = df1[!duplicated(df1[,c("state")]),]
+df1$state = str_replace(df1$state,"\\)","")
+df1$state = str_trim(df1$state)
+
+#find cities which have the following state codes
+#F&V,KER,Others,RAJ,RJ,CHATT,CHGARH
+df2=df1 %>% filter(state == c('KER','Others','RAJ','RJ','CHATT','CHGARH'))
+df2=df2[!duplicated(df2[,c("state","city")]),]
+
+sizeofdf2=nrow(df2)
+#print the states identified with each of these cities
+for(i in 1:sizeofdf2){
+  cat(df2[i,]$city,df2[i,]$state,"\n")
+}
+
+# from the output below, we can make the city pratapgarh to be same as others in RAJ
+# In addition, CHATT and CHGARG are same state i.e. chhatisgarh
+df1$state=str_replace(df1$state,"CHATT","CHGARH")
+df1$state=str_replace(df1$state,"RJ","RAJ")
+df1$state=str_replace(df1$state,"TELANGANA","Telangana")
+df1$state=str_replace(df1$state,"Others","DELHI")
+df1$state=str_replace(df1$state,"F\\&V","MP")
+#remove special characters like "." from states
+df1$state=str_replace_all(df1$state,"\\.","")
+
+#first find all cities which dont have a state
+allCities = df1 %>% filter(is.na(state))
+unique(allCities[,c('city')])
+
+#Now start replacing all of them with appropriate state
+df1$state[df1$city=='DELHI'] <- 'DELHI'
+df1$state[df1$city=='BANGALORE'] <- 'KNT'
+df1$state[df1$city=='BULANDSHAHR'] <- 'UP'
+df1$state[df1$city=='SHAHJAHANPUR'] <- 'UP'
+df1$state[df1$city=='CHENNAI'] <- 'TN'
+df1$state[df1$city=='MUMBAI'] <- 'MS'
+df1$state[df1$city=='NAGPUR'] <- 'MS'
+df1$state[df1$city=='JAIPUR'] <- 'RAJ'
+df1$state[df1$city=='HYDERABAD'] <- 'Telangana'
+df1$state[df1$city=='GUWAHATI'] <- 'AS'
+df1$state[df1$city=='PATNA'] <- 'BHR'
+df1$state[df1$city=='IMPHAL'] <- 'Meghalaya'
+df1$state[df1$city=='KOLKATA'] <- 'WB'
+df1$state[df1$city=='LUCKNOW'] <- 'UP'
+df1$state[df1$city=='BHOPAL'] <- 'MP'
+df1$state[df1$city=='CHANDIGARH'] <- 'PB'
+df1$state[df1$city=='JAMMU'] <- 'JK'
+df1$state[df1$city=='Others'] <- 'Delhi'
+df1$state[df1$city=="F\\&V "] <- 'MP'
+
+#Below lines of code are just to check whether there could be other rows
+#with Others as state
+allFAndVState = df1 %>% filter(state == "Others")
+str(df1)
+
+```
+#sum up the quantity and arrange them in desc order to find the highest consuming state
+```{r}
+dfQty = df1 %>% group_by(state) %>% summarize(yearQty=sum(quantity)) %>% arrange(desc(yearQty))
+summary(dfQty)
+#plot the usage
+ggplot(data=dfQty) + aes(reorder(state,yearQty),yearQty,fill=state) + geom_col(width=1) +coord_flip()
+
+```
+
+
+#What is the percent usage from the above
+```{r}
+#In terms of percentage
+ggplot(dfQty,aes(fill=state)) + 
+         geom_bar(aes(x=state,y = (yearQty)/sum(yearQty)),geom ="text",stat = "identity") + scale_y_continuous(labels = scales::percent)
+
+#% as a label on each state
+ggplot(dfQty,aes(x=state, y=(yearQty)/sum(yearQty), fill=state)) +
+  geom_bar(stat="identity") + geom_text(aes(label=paste0(sprintf("%1.1f", (yearQty)/sum(yearQty)*100),"%"), colour="white"))
+
+```
+
+#scatter plot for consumption in top 3 states
+```{r}
+ggplot(subset(df1,state %in% c("MS","KNT","GUJ")),aes(x=date,y=quantity,col=state)) + geom_point()
+
+```
+
+#PriceTrend in the top 3 states
+```{r}
+ggplot(subset(df1,state %in% c("MS","KNT","GUJ")),aes(x=date,y=priceMod,col=state)) + geom_point()
+```
+
+#Predict prices for the next 30 days in the state which consumes the most 
+```{r}
+dfBang = df1 %>% filter(state=="MS") %>% select(date,priceMod)
+colnames(dfBang) = c('ds','y')
+m=prophet(dfBang)
+future = make_future_dataframe(m,period=30,freq = 'd')
+forecast = predict(m,future)
+plot(m,forecast)
+```
+
+#Identify some forecast trend
+```{r}
+str(forecast)
+max(forecast$trend)
+min(forecast$trend)
+```
+
+#Conclusions
+1. Maharashtra is top consuming state
+2. Maharashtra, Karnataka and Gujarat are the top 3 consuming states. Together they consume ~75% of the overall produce.
+3. In Gujarat, there is a spike in consumption in the first half of the year, in karnataka the consumption spikes in the 4th quarter. In Maharashtra the consumption is constant throughout the year.
+4. Price is similar across the top 3 states throughout
+
